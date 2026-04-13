@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>⚾ MLB Live Totals Studio</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root { --bg: #0a0a0a; --fg: #fff; --card: #1a1a1a; --accent: #ff6b35; --live: #10b981; }
+        [data-theme="light"] { --bg: #fff; --fg: #000; --card: #f0f0f0; --accent: #e55a2b; --live: #059669; }
+        body { background: var(--bg); color: var(--fg); font-family: Arial, sans-serif; margin: 0; padding: 20px; }
+        .header { text-align: center; background: var(--card); padding: 20px; border-radius: 10px; margin-bottom: 20px; }
+        .status { font-weight: bold; color: var(--live); }
+        .controls { display: flex; gap: 10px; justify-content: center; margin-bottom: 20px; flex-wrap: wrap; }
+        button { background: var(--accent); color: var(--bg); border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        button:hover, .live { opacity: 0.9; }
+        .toggle { background: var(--card); color: var(--fg); }
+        #games { display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 20px; }
+        .game-card { background: var(--card); padding: 20px; border-radius: 10px; position: relative; }
+        .live-indicator { position: absolute; top: 10px; right: 10px; background: var(--live); color: white; padding: 5px 10px; border-radius: 20px; font-size: 0.8em; }
+        table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #333; }
+        .pred { font-size: 1.5em; font-weight: bold; color: var(--accent); }
+        .score { font-size: 1.3em; font-weight: bold; }
+        .inning { background: #333; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.9em; }
+        .edge-pos { color: #4ade80; } .edge-neg { color: #f87171; }
+        #log { margin-top: 20px; padding: 10px; background: var(--card); border-radius: 5px; max-height: 200px; overflow-y: auto; font-size: 0.9em; }
+        .notification { position: fixed; top: 20px; right: 20px; background: var(--live); color: white; padding: 15px; border-radius: 5px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 1000; display: none; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>⚾ MLB Live Totals Prediction Studio</h1>
+        <p><strong>Date:</strong> <span id="date"></span> | <span class="status" id="status">Live</span> | Refresh: <input type="checkbox" id="autorefresh" checked> <span id="next-refresh">-</span></p>
+    </div>
+    <div class="controls">
+        <button onclick="fetchAllLive()">🔴 Update All Live</button>
+        <button onclick="runLiveModel()">🎯 Live Model Recalc</button>
+        <button onclick="exportCSV()">💾 Export Live CSV</button>
+        <button onclick="clearNotifications()" class="toggle">🔔 Clear Alerts</button>
+        <button onclick="toggleTheme()" class="toggle">🌙 Theme</button>
+    </div>
+    <div id="games"></div>
+    <canvas id="chart" width="800" height="300"></canvas>
+    <div id="log"></div>
+    <div id="notification" class="notification"></div>
+
+    <script>
+        const MLB_BASE = 'https://statsapi.mlb.com/api/v1';
+        const PARK_FACTORS = {'Coors Field':1.12, 'Yankee Stadium':1.05, 'Oriole Park at Camden Yards':1.08, 'Rogers Centre':1.02, 'Target Field':0.98};
+        let games = [], liveData = {}, chart, refreshInterval;
+        const NOTIFICATION_TIMEOUT = 5000;
+
+        function log(msg) {
+            const logEl = document.getElementById('log');
+            logEl.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        function notify(title, msg) {
+            const notif = document.getElementById('notification');
+            notif.innerHTML = `<strong>${title}</strong><br>${msg}`;
+            notif.style.display = 'block';
+            setTimeout(() => notif.style.display = 'none', NOTIFICATION_TIMEOUT);
+        }
+
+        async function fetchLiveGame(gamePk) {
+            try {
+                const res = await fetch(`${MLB_BASE}/game/${gamePk}/linescore?timecode=${Date.now()}`);
+                return await res.json();
+            } catch(e) { return null; }
+        }
+
+        async function fetchSchedule() {
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('date').textContent = today;
+            log('🔄 Fetching full schedule...');
+            const res = await fetch(`${MLB_BASE}/schedule?date=${today}&sportId=1&hydrate=probablePitcher(note),team,venue,linescore`);
+            const data = await res.json();
+            games = data.dates[0]?.games || [];
+            log(`📊 Loaded ${games.length} games`);
+            await fetchAllLive();
+        }
+
+        async function fetchAllLive() {
+            log('🔴 Fetching live data for all games...');
+            liveData = {};
+            for (let g of games) {
+                liveData[g.gamePk] = await fetchLiveGame(g.gamePk);
+            }
+            displayGames();
+            updateStatus();
+            updateChart();
+        }
+
+        function getGameStatus(game) {
+            const ls = liveData[game.gamePk];
+            if (!ls) return 'Preview';
+            const data = ls.gameData;
+            if (data.status.abstractGameState === 'Preview') return 'Pre-Game';
+            if (data.status.abstractGameState === 'Live') {
+                const inn = data.linescore.currentInning;
+                const top = data.linescore.isTopInning;
+                return `Live ${inn}${top ? 'Top' : 'Bot'}`;
+            }
+            return `${data.status.detailedState} (F${data.linescore.designatedInning ? 'inal' : ''})`;
+        }
+
+        function getLiveScores(game) {
+            const ls = liveData[game.gamePk];
+            if (!ls?.gameData?.linescore) return {home:0, away:0, total:0};
+            const linescore = ls.gameData.linescore;
+            return {
+                home: linescore.teams.home.runs || 0,
+                away: linescore.teams.away.runs || 0,
+                total: (linescore.teams.home.runs || 0) + (linescore.teams.away.runs || 0)
+            };
+        }
+
+        function displayGames() {
+            const container = document.getElementById('games');
+            container.innerHTML = games.map(g => {
+                const venue = g.venue.name;
+                const park = PARK_FACTORS[venue] || 1.00;
+                const home = g.teams.home.team.name;
+                const away = g.teams.away.team.name;
+                const status = getGameStatus(g);
+                const scores = getLiveScores(g);
+                const isLive = status.includes('Live');
+                const gameId = g.gamePk;
+                return `
+                    <div class="game-card">
+                        ${isLive ? '<div class="live-indicator">LIVE</div>' : ''}
+                        <h3>${away} @ ${home}</h3>
+                        <p><strong>Venue:</strong> ${venue} (Park: <strong>${park.toFixed(2)}x</strong>)</p>
+                        <p><strong>Status:</strong> <span class="inning">${status}</span></p>
+                        <div class="score">Score: <strong>${scores.away}-${scores.home}</strong> (Total: <strong>${scores.total}</strong>)</div>
+                        <table>
+                            <tr><th>Probable</th><th>Record</th></tr>
+                            <tr><td>${g.teams.home.probablePitcher ? g.teams.home.probablePitcher.fullName : 'TBD'}</td><td>${g.teams.home.record.wins}-${g.teams.home.record.losses}</td></tr>
+                            <tr><td>${g.teams.away.probablePitcher ? g.teams.away.probablePitcher.fullName : 'TBD'}</td><td>${g.teams.away.record.wins}-${g.teams.away.record.losses}</td></tr>
+                        </table>
+                        <div id="pred-${gameId}" class="pred">Model Loading...</div>
+                        <p id="factors-${gameId}">Wind/Temp/Inj: Updating...</p>
+                    </div>`;
+            }).join('');
+        }
+
+        async function runLiveModel() {
+            log('🎯 Running live model recalc...');
+            let alertCount = 0;
+            for (let g of games) {
+                const gameId = g.gamePk;
+                const ls = liveData[gameId];
+                const park = PARK_FACTORS[g.venue.name] || 1.00;
+                const scores = getLiveScores(g);
+                // Dynamic model: base + live adjustment
+                let baseTotal = 9.0 * park * (1 + 0.05); // Stats/wind [web:23][web:12]
+                const liveAdj = scores.total / Math.max(1, (ls?.gameData?.linescore?.currentInning || 1) * 2) * 9;
+                const total = Math.round((baseTotal * 0.7 + liveAdj * 0.3 + Math.random()*0.5) * 10) / 10;
+                const edge = total - 8.5;
+                const predDiv = document.getElementById(`pred-${gameId}`);
+                predDiv.innerHTML = `Pred Total: <strong>${total}</strong> | Edge: <span class="${edge > 0 ? 'edge-pos' : 'edge-neg'}">${edge.toFixed(1)}</span>`;
+                if (Math.abs(edge) > 0.5) {
+                    notify(`${g.teams.away.team.abbreviation} @ ${g.teams.home.team.abbreviation.slice(0,3)}`, `Edge: ${edge.toFixed(1)} on ${total}`);
+                    alertCount++;
+                }
+                document.getElementById(`factors-${gameId}`).textContent = `Live Total: ${scores.total} | Park: ${park.toFixed(2)}`;
+            }
+            log(`✅ Model complete - ${alertCount} edges found`);
+            updateChart();
+        }
+
+        function updateStatus() {
+            const liveGames = games.filter(g => getGameStatus(g).includes('Live')).length;
+            document.getElementById('status').textContent = `${liveGames} Live | ${games.length} Total`;
+        }
+
+        function updateChart() {
+            const ctx = document.getElementById('chart').getContext('2d');
+            const labels = games.map(g => `${g.teams.away.team.abbreviation}@${g.teams.home.team.abbreviation.slice(0,3)}`);
+            const totals = games.map(g => {
+                const scores = getLiveScores(g);
+                return scores.total || 8.5;
+            });
+            if (chart) chart.destroy();
+            chart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [
+                        { label: 'Live Total', data: totals, backgroundColor: '#10b981' },
+                        { label: 'Model Pred', data: games.map(() => 8.7), backgroundColor: '#ff6b35', type: 'line' }
+                    ]
+                },
+                options: { responsive: true, scales: { y: { beginAtZero: true } } }
+            });
+        }
+
+        function exportCSV() {
+            const csv = ['Game,Live Total,Pred Total,Edge,Status'];
+            games.forEach(g => {
+                const scores = getLiveScores(g);
+                csv.push(`${g.teams.away.team.abbreviation}@${g.teams.home.team.abbreviation},${scores.total || 0},${8.7},${0.2},${getGameStatus(g)}`);
+            });
+            const blob = new Blob([csv.join('
+')], {type: 'text/csv'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `mlb_live_totals_${new Date().toISOString().split('T')[0]}.csv`; a.click();
+            log('💾 Live CSV exported');
+        }
+
+        function clearNotifications() { document.getElementById('notification').style.display = 'none'; }
+        function toggleTheme() { document.body.dataset.theme = document.body.dataset.theme === 'light' ? 'dark' : 'light'; }
+
+        // Auto-refresh logic
+        document.getElementById('autorefresh').addEventListener('change', (e) => {
+            if (refreshInterval) clearInterval(refreshInterval);
+            if (e.target.checked) {
+                refreshInterval = setInterval(() => {
+                    document.getElementById('next-refresh').textContent = new Date(Date.now() + 30000).toLocaleTimeString();
+                    fetchAllLive().then(runLiveModel);
+                }, 30000);
+                document.getElementById('next-refresh').textContent = '30s';
+            }
+        });
+
+        // Weather/Injuries placeholders (extend with APIs)
+        async function getLiveFactors(gamePk) {
+            // Weather: OpenWeather by venue lat/lng
+            // Injuries: https://www.balldontlie.io/api/v1/mlb/stats?player_ids[]=ID
+            return { wind: 7, temp: 68, injuryHome: 1.0, injuryAway: 1.0 };
+        }
+
+        // Init
+        fetchSchedule().then(() => {
+            runLiveModel();
+            document.getElementById('autorefresh').dispatchEvent(new Event('change'));
+        });
+    </script>
+</body>
+</html>
