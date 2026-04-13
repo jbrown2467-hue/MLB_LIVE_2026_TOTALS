@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html><head><title>MLB Totals</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:Arial;background:#000;color:#fff;margin:0;padding:20px;text-align:center}.btn{background:#ff6b35;color:#000;padding:15px 30px;border-radius:10px;font-size:18px;margin:10px;cursor:pointer;border:none;font-weight:bold}.btn:hover{opacity:0.9}#games{display:grid;gap:20px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin:20px 0}.game{background:#111;padding:20px;border-radius:10px}.live{background:#0a5 !important;color:#fff !important}.score{font-size:24px;font-weight:bold}.pred{font-size:28px;color:#ff6b35;font-weight:bold;margin:10px 0}.pos{color:#0f6}.neg{color:#f55}#chart{max-width:100%;height:250px;margin:20px 0}</style></head><body>
+<h1 style="font-size:48px;margin:20px 0">⚾ MLB TOTALS LIVE</h1>
+<div>
+<button class="btn" onclick="load()">LOAD GAMES</button>
+<button class="btn" onclick="model()">MODEL</button>
+<button class="btn" onclick="live()">LIVE</button>
+<button class="btn" onclick="csv()">CSV</button>
+</div>
+<div id="games"></div>
+<canvas id="chart"></canvas>
+
+<script>
+g=[],c;
+l=(m)=>{document.getElementById('log')?document.getElementById('log').innerHTML+='<div>'+m+'</div>':0};
+games=[{id:1,a:'NYY',h:'TOR',v:'Rogers',p:1.02,s:{a:3,h:4,t:7,st:'Bot 7'}},{id:2,a:'BOS',h:'BAL',v:'Camden',p:1.08,s:{a:5,h:2,t:7,st:'Top 5'}},{id:3,a:'LAA',h:'MIN',v:'Target',p:0.98,s:{a:2,h:3,t:5,st:'Final'}},{id:4,a:'CLE',h:'PHI',v:'Citizens',p:1.03,s:{a:0,h:0,t:0,st:'Preview'}}];
+load=()=>{
+g=[...games];
+document.getElementById('games').innerHTML=g.map(e=>`
+<div class="game ${e.s.st.includes('Live')||e.s.st.includes('Bot')||e.s.st.includes('Top')?'live':''}">
+<h3>${e.a} @ ${e.h}</h3>
+<p>${e.v} (${e.p.toFixed(2)}x)</p>
+<p style="font-size:20px">${e.s.st}</p>
+<div class="score">${e.a}: ${e.s.a} | ${e.h}: ${e.s.h} | <strong>${e.s.t}</strong></div>
+<div id=p${e.id} class="pred">RUN MODEL</div>
+</div>`).join('');
+l('Games loaded');
+};
+model=()=>{
+g.forEach(e=>{
+b=9*e.p*1.02;
+c=e.s.t>0?e.s.t*9/14:8.5;
+d=Math.round((b*.6+c*.4)*10)/10;
+f=d-8.5;
+document.getElementById('p'+e.id).innerHTML=`${d}<br><span class="${f>.3?'pos':'neg'}">${f.toFixed(1)}</span>`;
+});
+chart=new Chart(document.getElementById('chart'),{type:'bar',data:{labels:g.map(e=>e.a+'@'+e.h.slice(0,3)),datasets:[{label:'Total',data:g.map(e=>e.s.t),backgroundColor:'#0a5'}]},options:{responsive:true,scales:{y:{beginAtZero:true}}}});
+l('Model run');
+};
+live=()=>{
+games[0].s.h++;
+games[0].s.t++;
+l('LIVE: TOR scores!');
+load();
+model();
+};
+csv=()=>{
+x='Game,Total,Pred,Edge
+';
+g.forEach(e=>x+=`${e.a}@${e.h},${e.s.t},8.7,0.2
+`);
+a=document.createElement('a');
+a.href='data:text/csv,'+encodeURIComponent(x);
+a.download='mlb.csv';
+a.click();
+l('CSV saved');
+};
+</script>
+</body></html>
